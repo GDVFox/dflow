@@ -1,12 +1,9 @@
 package external
 
-import "github.com/GDVFox/dflow/meta_node/config"
+import "github.com/GDVFox/dflow/machine_node/config"
 
 // ETCD объект синглтон для работы с etcd.
 var ETCD *ETCDClient
-
-// Machines объект синглтон для работы с машинами
-var Machines *MachineClinets
 
 // InitExternal инициализирует подключения к внешним ресурсам.
 func InitExternal(cfg *config.Config) error {
@@ -15,11 +12,5 @@ func InitExternal(cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
-
-	Machines, err = NewMachineClinets(cfg.Machines)
-	if err != nil {
-		return err
-	}
-
 	return nil
 }
