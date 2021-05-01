@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/GDVFox/dflow/machine_node/config"
 	"github.com/GDVFox/dflow/machine_node/external"
+	"github.com/GDVFox/dflow/machine_node/watcher"
 	"github.com/GDVFox/dflow/util"
 	"github.com/GDVFox/dflow/util/httplib"
 	"github.com/GDVFox/dflow/util/message"
@@ -21,20 +23,36 @@ func RunAction(r *http.Request) (*httplib.Response, error) {
 		return httplib.NewBadRequestResponse(httplib.NewErrorBody(BadUnmarshalRequestErrorCode, err.Error())), nil
 	}
 
-	_, err := external.ETCD.LoadAction(r.Context(), req.Action)
+	actionBytes, err := external.ETCD.LoadAction(r.Context(), req.Action)
 	if err != nil {
 		if errors.Cause(err) == storage.ErrNotFound {
 			return httplib.NewNotFoundResponse(httplib.NewErrorBody(NoActionErrorCode, err.Error())), nil
 		}
 		return httplib.NewInternalErrorResponse(httplib.NewErrorBody(ETCDErrorCode, err.Error())), nil
 	}
+	logger.Debugf("binary action '%s' received", req.Action)
 
-	logger.Debugf("Starting %s", req.Name)
-	logger.Debugf("Action %s loaded", req.Action)
-	logger.Debugf("Port %d", req.Port)
-	logger.Debugf("Replicas: %d", req.Replicas)
-	logger.Debugf("In: %v", req.In)
-	logger.Debugf("Out: %v", req.Out)
+	opt := &watcher.ActionOptions{
+		Port:             req.Port,
+		Replicas:         req.Replicas,
+		In:               req.In,
+		Out:              req.Out,
+		RuntimePath:      config.Conf.RuntimePath,
+		RuntimeLogsDir:   config.Conf.RuntimeLogsDir,
+		ActionStartRetry: config.Conf.ActionStartRetry,
+	}
+	action := watcher.NewAction(req.SchemeName, req.ActionName, actionBytes, logger, opt)
 
+	if err := action.Start(r.Context()); err != nil {
+		return httplib.NewInternalErrorResponse(httplib.NewErrorBody(InternalError, err.Error())), nil
+	}
+	logger.Debugf("action '%s' started", action.Name())
+
+	if err := watcher.ActionWatcher.RegisterAction(action); err != nil {
+		return httplib.NewInternalErrorResponse(httplib.NewErrorBody(InternalError, err.Error())), nil
+	}
+	logger.Debugf("action '%s' registered", action.Name())
+
+	logger.Infof("started action '%s' from scheme '%s'", req.ActionName, req.SchemeName)
 	return httplib.NewOKResponse(nil, false), nil
 }

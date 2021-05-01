@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"github.com/GDVFox/dflow/machine_node/api"
 	"github.com/GDVFox/dflow/machine_node/config"
 	"github.com/GDVFox/dflow/machine_node/external"
+	"github.com/GDVFox/dflow/machine_node/watcher"
 	"github.com/GDVFox/dflow/util"
 	"github.com/GDVFox/dflow/util/httplib"
 	"github.com/gorilla/mux"
@@ -29,6 +31,13 @@ func main() {
 		return
 	}
 
+	if _, err := os.Stat(config.Conf.RuntimeLogsDir); os.IsNotExist(err) {
+		if err := os.Mkdir(config.Conf.RuntimeLogsDir, 0700); err != nil {
+			fmt.Printf("can not create logging dir: %v", err)
+			return
+		}
+	}
+
 	logger, err := util.NewLogger(config.Conf.Logging)
 	if err != nil {
 		fmt.Printf("can not init logger: %v", err)
@@ -40,10 +49,16 @@ func main() {
 		return
 	}
 
+	watcherContext, watcherCancel := context.WithCancel(context.Background())
+	if err := watcher.StartWatcher(watcherContext, logger, config.Conf.Watcher); err != nil {
+		logger.Fatalf("can not init external resources: %v", err)
+		return
+	}
+
 	r := mux.NewRouter().PathPrefix("/v1").Subrouter()
 
 	r.HandleFunc("/run", httplib.CreateHandler(api.RunAction, logger)).Methods(http.MethodPost)
-	r.HandleFunc("/stop", nil).Methods(http.MethodPost)
+	r.HandleFunc("/stop", httplib.CreateHandler(api.StopAction, logger)).Methods(http.MethodPost)
 
 	signalChannel := make(chan os.Signal, 1)
 	signal.Notify(signalChannel, syscall.SIGINT, syscall.SIGTERM)
@@ -51,6 +66,8 @@ func main() {
 	stopChannel := make(chan struct{})
 	go func() {
 		defer close(stopChannel)
+		defer watcherCancel()
+
 		sig := <-signalChannel
 		logger.Info("got signal: ", sig)
 	}()
