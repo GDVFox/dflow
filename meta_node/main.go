@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/GDVFox/dflow/meta_node/api/schemas"
 	"github.com/GDVFox/dflow/meta_node/config"
 	"github.com/GDVFox/dflow/meta_node/external"
+	"github.com/GDVFox/dflow/meta_node/watcher"
 	"github.com/GDVFox/dflow/util"
 	"github.com/GDVFox/dflow/util/httplib"
 )
@@ -42,6 +44,12 @@ func main() {
 		return
 	}
 
+	watcherCtx, watcherCancel := context.WithCancel(context.Background())
+	if err := watcher.StartWatcher(watcherCtx, logger, config.Conf.Watcher); err != nil {
+		logger.Fatalf("can not start watcher: %v", err)
+		return
+	}
+
 	r := mux.NewRouter().PathPrefix("/v1").Subrouter()
 
 	r.HandleFunc("/actions", httplib.CreateHandler(actions.ListActions, logger)).Methods(http.MethodGet)
@@ -62,6 +70,7 @@ func main() {
 	stopChannel := make(chan struct{})
 	go func() {
 		defer close(stopChannel)
+		defer watcherCancel()
 		sig := <-signalChannel
 		logger.Info("got signal: ", sig)
 	}()
