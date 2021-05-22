@@ -1,4 +1,4 @@
-# meta_node
+# machine_node
 
 🚧 English version of README.md is under construction. 🚧
 
