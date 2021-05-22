@@ -1,9 +1,9 @@
-package actions
+package schemas
 
 import (
 	flag "github.com/spf13/pflag"
 
-	"github.com/GDVFox/dflow/client/metaclient"
+	"github.com/GDVFox/dflow/dflow/metaclient"
 	"github.com/pterm/pterm"
 )
 
@@ -31,7 +31,7 @@ func (c *ListCommandHelper) Init(args []string) error {
 
 // PrintHelp печатает сообщение с помощью по команде
 func (c *ListCommandHelper) PrintHelp() {
-	pterm.DefaultBasicText.Printfln("Command 'dflow %s actions list' returns list of available actions.", metaclient.MetaNodeAddress)
+	pterm.DefaultBasicText.Printfln("Command 'dflow %s schemas list' returns list of available schemas.", metaclient.MetaNodeAddress)
 	pterm.Println()
 	pterm.DefaultBasicText.Println("Flags:")
 	c.fs.PrintDefaults()
@@ -44,25 +44,21 @@ func (c *ListCommandHelper) Run() {
 		return
 	}
 
-	loadSpinner, _ := pterm.DefaultSpinner.Start("Loading actions list...")
-	actionsList, err := metaclient.MetaNode.GetActionsList()
+	loadSpinner, _ := pterm.DefaultSpinner.Start("Loading schemas list...")
+	schemasList, err := metaclient.MetaNode.GetSchemasList()
 	if err != nil {
-		loadSpinner.Fail("Can not load actions list: ", err)
+		loadSpinner.Fail("Can not load schemas list: ", err)
 		return
 	}
-	loadSpinner.Success("Actions loaded:")
+
+	loadSpinner.Success("Schemas loaded:")
 	pterm.Println()
 
-	items := make([]pterm.BulletListItem, 0)
-	for _, action := range actionsList.Actions {
-		item := pterm.BulletListItem{
-			Level:       0,
-			Text:        action,
-			Bullet:      ">",
-			BulletStyle: pterm.NewStyle(pterm.FgYellow),
+	for _, scheme := range schemasList.Schemas {
+		if scheme.Status == 0 {
+			stoppedPrinter.Printfln(scheme.Name)
+		} else if scheme.Status == 1 {
+			runningPrinter.Printfln(scheme.Name)
 		}
-		items = append(items, item)
 	}
-
-	pterm.DefaultBulletList.WithItems(items).Render()
 }

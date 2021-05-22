@@ -3,7 +3,7 @@ package actions
 import (
 	"errors"
 
-	"github.com/GDVFox/dflow/client/metaclient"
+	"github.com/GDVFox/dflow/dflow/metaclient"
 	"github.com/pterm/pterm"
 	flag "github.com/spf13/pflag"
 )

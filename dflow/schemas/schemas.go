@@ -1,8 +1,8 @@
 package schemas
 
 import (
-	"github.com/GDVFox/dflow/client/common"
-	"github.com/GDVFox/dflow/client/metaclient"
+	"github.com/GDVFox/dflow/dflow/common"
+	"github.com/GDVFox/dflow/dflow/metaclient"
 	"github.com/pterm/pterm"
 )
 

@@ -3,11 +3,11 @@ package main
 import (
 	"os"
 
-	"github.com/GDVFox/dflow/client/about"
-	"github.com/GDVFox/dflow/client/actions"
-	"github.com/GDVFox/dflow/client/help"
-	"github.com/GDVFox/dflow/client/metaclient"
-	"github.com/GDVFox/dflow/client/schemas"
+	"github.com/GDVFox/dflow/dflow/about"
+	"github.com/GDVFox/dflow/dflow/actions"
+	"github.com/GDVFox/dflow/dflow/help"
+	"github.com/GDVFox/dflow/dflow/metaclient"
+	"github.com/GDVFox/dflow/dflow/schemas"
 	"github.com/pterm/pterm"
 )
 

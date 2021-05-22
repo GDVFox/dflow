@@ -8,7 +8,7 @@ import (
 	"path"
 	"path/filepath"
 
-	"github.com/GDVFox/dflow/client/metaclient"
+	"github.com/GDVFox/dflow/dflow/metaclient"
 	"github.com/GDVFox/dflow/meta_node/planner"
 	"github.com/pterm/pterm"
 	flag "github.com/spf13/pflag"

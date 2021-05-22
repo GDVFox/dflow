@@ -1,15 +1,12 @@
-package schemas
+package actions
 
 import (
-	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 
 	flag "github.com/spf13/pflag"
-	"gopkg.in/yaml.v3"
 
-	"github.com/GDVFox/dflow/client/metaclient"
+	"github.com/GDVFox/dflow/dflow/metaclient"
 	"github.com/pterm/pterm"
 )
 
@@ -17,10 +14,9 @@ import (
 type GetCommandHelper struct {
 	fs *flag.FlagSet
 
-	help   bool
-	name   string
-	format string
-	out    string
+	help bool
+	name string
+	out  string
 }
 
 // NewGetCommandHelper создает новый GetCommandHelper
@@ -29,9 +25,8 @@ func NewGetCommandHelper() *GetCommandHelper {
 		fs: flag.NewFlagSet("get", flag.ContinueOnError),
 	}
 
-	c.fs.StringVarP(&c.name, "name", "n", "", "Name of the scheme to load")
-	c.fs.StringVarP(&c.format, "format", "f", "yaml", "Format of output, possible values: json, yaml")
-	c.fs.StringVarP(&c.out, "out", "o", "", "Output file")
+	c.fs.StringVarP(&c.name, "name", "n", "", "Name of the actions to load")
+	c.fs.StringVarP(&c.out, "out", "o", "", "Output binary file")
 	c.fs.BoolVarP(&c.help, "help", "h", false, "Prints help message")
 
 	return c
@@ -39,7 +34,7 @@ func NewGetCommandHelper() *GetCommandHelper {
 
 // PrintHelp печатает сообщение с помощью по команде
 func (c *GetCommandHelper) PrintHelp() {
-	pterm.DefaultBasicText.Printfln("Command 'dflow %s schemas get' returns description of specified scheme.", metaclient.MetaNodeAddress)
+	pterm.DefaultBasicText.Printfln("Command 'dflow %s actions get' returns binary file of specified action.", metaclient.MetaNodeAddress)
 	pterm.Println()
 	pterm.DefaultBasicText.Println("Flags:")
 	c.fs.PrintDefaults()
@@ -58,10 +53,6 @@ func (c *GetCommandHelper) Init(args []string) error {
 		return errors.New("name can not be empty")
 	}
 
-	if c.format != jsonExt && c.format != yamlExt {
-		return fmt.Errorf("format possible values is: json, yaml: got %s", c.format)
-	}
-
 	return nil
 }
 
@@ -72,37 +63,25 @@ func (c *GetCommandHelper) Run() {
 		return
 	}
 
-	loadSpinner, _ := pterm.DefaultSpinner.Start("Loading scheme...")
-	scheme, err := metaclient.MetaNode.GetScheme(c.name)
+	loadSpinner, _ := pterm.DefaultSpinner.Start("Loading action...")
+	actionBinary, err := metaclient.MetaNode.GetAction(c.name)
 	if err != nil {
-		loadSpinner.Fail("Can not get scheme: ", err)
+		loadSpinner.Fail("Can not get action: ", err)
 		return
 	}
-	loadSpinner.Success("Scheme loaded!")
-
-	var schemeData []byte
-	switch c.format {
-	case jsonExt:
-		schemeData, err = json.MarshalIndent(scheme, "", "\t")
-	case yamlExt:
-		schemeData, err = yaml.Marshal(scheme)
-	}
-	if err != nil {
-		pterm.Error.Printfln("Can not marshal scheme data to format %s: %s", c.format, err)
-		return
-	}
+	loadSpinner.Success("Action loaded!")
 
 	if c.out == "" {
 		pterm.Println()
-		pterm.DefaultBasicText.Println(string(schemeData))
+		pterm.DefaultBasicText.Println(string(actionBinary))
 	} else {
 		f, err := os.Create(c.out)
 		if err != nil {
 			pterm.Error.Printfln("Can not open output file %s: %s", c.out, err)
 			return
 		}
-		if _, err := f.Write(schemeData); err != nil {
-			pterm.Error.Println("Can not write scheme to file %s: %s", c.out, err)
+		if _, err := f.Write(actionBinary); err != nil {
+			pterm.Error.Println("Can not write binary action to file %s: %s", c.out, err)
 			return
 		}
 	}
