@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/GDVFox/dflow/runtime/logs"
 	"github.com/GDVFox/dflow/util"
 	"golang.org/x/sync/errgroup"
 )
@@ -57,6 +56,9 @@ type DefaultForwarder struct {
 
 	forwardLog *ForwardLog
 
+	inputMaxMutex sync.Mutex
+	inputMax      map[uint16]uint32
+
 	ctx          context.Context
 	downstreamWG sync.WaitGroup
 
@@ -73,10 +75,11 @@ type DefaultForwarder struct {
 	ackTicker    *time.Ticker
 
 	downstreamConfig *DownstreamForwarderConfig
+	logger           *util.Logger
 }
 
 // NewDefaultForwarder создает новый объект DefaultForwarder.
-func NewDefaultForwarder(name string, outs []string, cfg *DefaultForwarderConfig) (*DefaultForwarder, error) {
+func NewDefaultForwarder(name string, outs []string, cfg *DefaultForwarderConfig, l *util.Logger) (*DefaultForwarder, error) {
 	forwardLog, err := NewForwardLog(cfg.ForwardLogDir + util.RandString(16))
 	if err != nil {
 		return nil, err
@@ -91,18 +94,20 @@ func NewDefaultForwarder(name string, outs []string, cfg *DefaultForwarderConfig
 		messageIndex:       0,
 		name:               name,
 		forwardLog:         forwardLog,
+		inputMax:           make(map[uint16]uint32),
 		downstreamsAcks:    make(map[uint16]uint32),
 		downstreamsInWork:  make(map[uint16]*workingDownstream),
 		downstreamsIndexes: downstreamsIndexes,
 		upstreamAcks:       make(chan UpstreamAck),
 		ackTicker:          time.NewTicker(cfg.ACKPeriod),
 		downstreamConfig:   cfg.DownstreamConfig,
+		logger:             l.WithName("default_forwarder"),
 	}, nil
 }
 
 // Run запускает Forwarder и блокируется.
 func (f *DefaultForwarder) Run(ctx context.Context) error {
-	defer logs.Logger.Debugf("forwarder: stopped")
+	defer f.logger.Debug("forwarder stopped")
 	defer close(f.upstreamAcks)
 	defer f.forwardLog.Close()
 	defer f.downstreamWG.Wait()
@@ -152,7 +157,7 @@ func (f *DefaultForwarder) ChangeOut(oldOut, newOut string) error {
 	delete(f.downstreamsIndexes, oldOut)
 	f.downstreamsIndexes[newOut] = downdstreamIndex
 
-	logs.Logger.Debugf("forwarder: changed out %s -> %s", oldOut, newOut)
+	f.logger.Infof("changed out %s -> %s", oldOut, newOut)
 	return nil
 }
 
@@ -170,11 +175,11 @@ func (f *DefaultForwarder) runDownstream(ctx context.Context, downstreamIndex ui
 		workingDownstream.stopDownstream()
 		delete(f.downstreamsInWork, downstreamIndex)
 
-		logs.Logger.Debugf("forwarder: send stop signal to previous downstream %d", downstreamIndex)
+		f.logger.Infof("send stop signal to previous downstream %d", downstreamIndex)
 	}
 
 	wd := &workingDownstream{
-		downstream:     NewDownstreamForwarder(downstreamIndex, f.name, addr, f.forwardLog.NewIterator(), f.downstreamConfig),
+		downstream:     NewDownstreamForwarder(downstreamIndex, f.name, addr, f.forwardLog.NewIterator(), f.downstreamConfig, f.logger),
 		stopDownstream: downstreamStop,
 		done:           make(chan struct{}),
 	}
@@ -186,18 +191,18 @@ func (f *DefaultForwarder) runDownstream(ctx context.Context, downstreamIndex ui
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		defer logs.Logger.Debugf("forwarder: stopped downstream %d", wd.downstream.downstreamIndex)
+		defer f.logger.Infof("stopped downstream %d", wd.downstream.downstreamIndex)
 
 		if err := wd.downstream.Run(downstreamCtx); err != nil {
-			logs.Logger.Errorf("forwarder: downstream %d stopped with error: %s", wd.downstream.downstreamIndex, err)
+			f.logger.Errorf("downstream %d stopped with error: %s", wd.downstream.downstreamIndex, err)
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		defer logs.Logger.Debugf("forwarder: stopped ACK handle for downstream %d", wd.downstream.downstreamIndex)
+		defer f.logger.Infof("stopped ACK handle for downstream %d", wd.downstream.downstreamIndex)
 
 		if err := f.handleAcks(downstreamCtx, wd.downstream.acks); err != nil {
-			logs.Logger.Errorf("forwarder: downstream %d ACK handle stopped with error: %s", wd.downstream.downstreamIndex, err)
+			f.logger.Errorf("downstream %d ACK handle stopped with error: %s", wd.downstream.downstreamIndex, err)
 		}
 	}()
 
@@ -210,11 +215,34 @@ func (f *DefaultForwarder) Forward(inputID uint16, inputMsgID uint32, data []byt
 	// Всегда увеличиваем счетчик, пропуски в случае ошибок не должны ни на что влиять
 	defer func() { f.messageIndex++ }()
 
+	if err := f.updateInputMax(inputID, inputMsgID); err != nil {
+		return fmt.Errorf("can not update max: %w", err)
+	}
+
+	// Если далее по схеме передавать сообщение некому,
+	// то и от логирования в буфер нет смысла.
+	// Кроме того по протоколу не передаются далее и пустые сообщения,
+	// они лишь служат маркером для перадачи подтверждений выше по потоку.
+	if len(f.downstreamsIndexes) == 0 || len(data) == 0 {
+		return nil
+	}
+
 	if err := f.forwardLog.Write(inputID, inputMsgID, f.messageIndex, data); err != nil {
-		logs.Logger.Errorf("forwarder: write forward log failed for message %d (len %d): %s", f.messageIndex, len(data), err)
 		return fmt.Errorf("can not write forward log: %w", err)
 	}
-	logs.Logger.Debugf("forwarder: forward message %d (len %d) done", f.messageIndex, len(data))
+	f.logger.Debugf("forward message %d (len %d) done", f.messageIndex, len(data))
+	return nil
+}
+
+func (f *DefaultForwarder) updateInputMax(inputID uint16, inputMsgID uint32) error {
+	f.inputMaxMutex.Lock()
+	defer f.inputMaxMutex.Unlock()
+
+	currentMax, ok := f.inputMax[inputID]
+	if ok && currentMax > inputMsgID { // случай равенства возможет для источника, так как там все 0.
+		return fmt.Errorf("got from %d message %d; current max is %d", inputID, inputMsgID, currentMax)
+	}
+	f.inputMax[inputID] = inputMsgID
 	return nil
 }
 
@@ -233,12 +261,12 @@ func (f *DefaultForwarder) handleAcks(ctx context.Context, acks chan *downstream
 				return nil
 			}
 
-			logs.Logger.Debugf("forwarder: got ACK from downstream %d: %d", ack.DownstreamIndex, ack.ackMessage)
+			f.logger.Debugf("got ACK from downstream %d: %d", ack.DownstreamIndex, ack.ackMessage)
 
 			f.downstreamsAcksLock.Lock()
 			ackOutputMessageID, ok := f.downstreamsAcks[ack.DownstreamIndex]
 			if ok && ackOutputMessageID >= uint32(ack.ackMessage) {
-				logs.Logger.Errorf("forwarder: new ack message from %d '%d' is less than saved '%d'",
+				f.logger.Errorf("new ack message from %d '%d' is less than saved '%d'",
 					ack.DownstreamIndex, ack.ackMessage, ackOutputMessageID)
 
 				f.downstreamsAcksLock.Unlock()
@@ -246,7 +274,6 @@ func (f *DefaultForwarder) handleAcks(ctx context.Context, acks chan *downstream
 			}
 			f.downstreamsAcks[ack.DownstreamIndex] = uint32(ack.ackMessage)
 			f.downstreamsAcksLock.Unlock()
-
 		}
 	}
 }
@@ -257,25 +284,35 @@ func (f *DefaultForwarder) trimLoop(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-f.ackTicker.C:
-			logs.Logger.Debugf("forwarder: starting trim forward log")
+			f.logger.Debugf("starting trim forward log")
 
-			inputMaxs, minAck, err := f.trimForwardLog()
-			if err != nil {
-				return fmt.Errorf("can not trim forward log: %w", err)
+			var inputMax UpstreamAck
+			if f.forwardLog.buffer.Size() == 0 {
+				f.inputMaxMutex.Lock()
+				inputMax = f.inputMax
+				f.inputMax = make(map[uint16]uint32)
+				f.inputMaxMutex.Unlock()
+			} else {
+				var minAck uint32
+				var err error
+
+				inputMax, minAck, err = f.trimForwardLog()
+				if err != nil {
+					return fmt.Errorf("can not trim forward log: %w", err)
+				}
+				f.logger.Debugf("trim forward log to %d done", minAck)
 			}
 
-			if len(inputMaxs) == 0 {
-				logs.Logger.Debugf("forwarder: nothing to trim")
+			if len(inputMax) == 0 {
+				f.logger.Debugf("nothing to trim")
 				continue
 			}
-
-			logs.Logger.Debugf("forwarder: trim forward log to %d done", minAck)
-			logs.Logger.Debugf("forwarder: got upstreams for ACK: %s", inputMaxs)
+			f.logger.Debugf("got upstreams for ACK: %s", inputMax)
 
 			select {
 			case <-ctx.Done():
 				return nil
-			case f.upstreamAcks <- inputMaxs:
+			case f.upstreamAcks <- inputMax:
 			}
 		}
 	}
